@@ -2,17 +2,26 @@ from collections import UserDict
 from datetime import datetime, timedelta
 
 
-def input_error(func):
-    def inner(*args, **kwargs):
-        try:
-            return func(*args, **kwargs)
-        except KeyError:
-            return "Contact not found."
-        except ValueError as e:
-            return str(e)
-        except IndexError:
-            return "Invalid command arguments."
-    return inner
+def input_error(func=None, *, usage=""):
+    def decorator(f):
+        def inner(*args, **kwargs):
+            try:
+                return f(*args, **kwargs)
+            except KeyError:
+                return "Contact not found."
+            except ValueError as e:
+                return str(e)
+            except IndexError:
+                msg = "Not enough arguments."
+                if usage:
+                    msg += f" Usage: {usage}"
+                return msg
+            except Exception as e:
+                return f"An unexpected error occurred: {e}"
+        return inner
+    if func is not None:
+        return decorator(func)
+    return decorator
 
 
 class Field:
@@ -24,14 +33,29 @@ class Field:
 
 
 class Name(Field):
-    pass
+    def __init__(self, value):
+        if not value or not value.strip():
+            raise ValueError("Name cannot be empty.")
+        super().__init__(value.strip())
 
 
 class Phone(Field):
     def __init__(self, value):
-        if not (value.isdigit() and len(value) == 10):
+        self.value = value  # uses the setter for validation
+
+    @staticmethod
+    def _validate(value):
+        if not (isinstance(value, str) and value.isdigit() and len(value) == 10):
             raise ValueError(f"Phone number must be 10 digits, got: {value}")
-        super().__init__(value)
+
+    @property
+    def value(self):
+        return self._value
+
+    @value.setter
+    def value(self, value):
+        Phone._validate(value)
+        self._value = value
 
 
 class Birthday(Field):
@@ -92,7 +116,6 @@ class AddressBook(UserDict):
 
     def get_upcoming_birthdays(self):
         today = datetime.today().date()
-        next_week = today + timedelta(days=7)
         upcoming = []
         for record in self.data.values():
             if record.birthday is None:
@@ -101,14 +124,13 @@ class AddressBook(UserDict):
             bday_this_year = bday.replace(year=today.year)
             if bday_this_year < today:
                 bday_this_year = bday_this_year.replace(year=today.year + 1)
-            if today <= bday_this_year <= next_week:
-                # Move to Monday if birthday falls on weekend
-                if bday_this_year.weekday() == 5:  # Saturday
-                    congratulation_date = bday_this_year + timedelta(days=2)
-                elif bday_this_year.weekday() == 6:  # Sunday
-                    congratulation_date = bday_this_year + timedelta(days=1)
-                else:
-                    congratulation_date = bday_this_year
+            delta = (bday_this_year - today).days
+            if 0 <= delta <= 6:
+                congratulation_date = bday_this_year
+                if congratulation_date.weekday() == 5:  # Saturday
+                    congratulation_date += timedelta(days=2)
+                elif congratulation_date.weekday() == 6:  # Sunday
+                    congratulation_date += timedelta(days=1)
                 upcoming.append({
                     "name": record.name.value,
                     "congratulation_date": congratulation_date.strftime("%d.%m.%Y"),
@@ -125,8 +147,10 @@ def parse_input(user_input):
     return command, *args
 
 
-@input_error
+@input_error(usage="add [name] [phone]")
 def add_contact(args, book: AddressBook):
+    if len(args) < 2:
+        raise IndexError
     name, phone, *_ = args
     record = book.find(name)
     message = "Contact updated."
@@ -139,8 +163,10 @@ def add_contact(args, book: AddressBook):
     return message
 
 
-@input_error
+@input_error(usage="change [name] [old phone] [new phone]")
 def change_contact(args, book: AddressBook):
+    if len(args) < 3:
+        raise IndexError
     name, old_phone, new_phone, *_ = args
     record = book.find(name)
     if record is None:
@@ -149,8 +175,10 @@ def change_contact(args, book: AddressBook):
     return "Contact updated."
 
 
-@input_error
+@input_error(usage="phone [name]")
 def show_phones(args, book: AddressBook):
+    if len(args) < 1:
+        raise IndexError
     name, *_ = args
     record = book.find(name)
     if record is None:
@@ -159,14 +187,16 @@ def show_phones(args, book: AddressBook):
 
 
 @input_error
-def show_all(book: AddressBook):
+def show_all(args, book: AddressBook):
     if not book.data:
         return "No contacts saved."
     return '\n'.join(str(record) for record in book.data.values())
 
 
-@input_error
+@input_error(usage="add-birthday [name] [DD.MM.YYYY]")
 def add_birthday(args, book: AddressBook):
+    if len(args) < 2:
+        raise IndexError
     name, date, *_ = args
     record = book.find(name)
     if record is None:
@@ -175,8 +205,10 @@ def add_birthday(args, book: AddressBook):
     return "Birthday added."
 
 
-@input_error
+@input_error(usage="show-birthday [name]")
 def show_birthday(args, book: AddressBook):
+    if len(args) < 1:
+        raise IndexError
     name, *_ = args
     record = book.find(name)
     if record is None:
@@ -196,41 +228,56 @@ def birthdays(args, book: AddressBook):
     )
 
 
+@input_error(usage="remove-contact [name]")
+def remove_contact(args, book: AddressBook):
+    if len(args) < 1:
+        raise IndexError
+    name, *_ = args
+    if book.find(name) is None:
+        raise KeyError
+    book.delete(name)
+    return "Contact removed."
+
+
+@input_error(usage="remove-phone [name] [phone]")
+def remove_phone(args, book: AddressBook):
+    if len(args) < 2:
+        raise IndexError
+    name, phone, *_ = args
+    record = book.find(name)
+    if record is None:
+        raise KeyError
+    record.remove_phone(phone)
+    return "Phone removed."
+
+
 def main():
     book = AddressBook()
     print("Welcome to the assistant bot!")
+
+    commands = {
+        "add": add_contact,
+        "change": change_contact,
+        "phone": show_phones,
+        "all": show_all,
+        "add-birthday": add_birthday,
+        "show-birthday": show_birthday,
+        "birthdays": birthdays,
+        "remove-contact": remove_contact,
+        "remove-phone": remove_phone,
+    }
+
     while True:
         user_input = input("Enter a command: ")
         command, *args = parse_input(user_input)
 
-        if command in ["close", "exit"]:
+        if command in ("close", "exit"):
             print("Good bye!")
             break
-
         elif command == "hello":
             print("How can I help you?")
-
-        elif command == "add":
-            print(add_contact(args, book))
-
-        elif command == "change":
-            print(change_contact(args, book))
-
-        elif command == "phone":
-            print(show_phones(args, book))
-
-        elif command == "all":
-            print(show_all(book))
-
-        elif command == "add-birthday":
-            print(add_birthday(args, book))
-
-        elif command == "show-birthday":
-            print(show_birthday(args, book))
-
-        elif command == "birthdays":
-            print(birthdays(args, book))
-
+        elif command in commands:
+            print(commands[command](args, book))
         else:
             print("Invalid command.")
 
